@@ -30,91 +30,40 @@ class Agents:
         Chooses an action for a single agent.
         Args:
             obs (np.ndarray): Local observation for the agent.
-            last_action (np.ndarray): Last action taken by the agent (one-hot). Not directly used by VDN's Q-network typically but can be part of obs.
+            last_action (np.ndarray): Last action taken by the agent (one-hot). Not directly used by VDN Q-network but can be part of obs.
             agent_num (int): The agent's id.
             avail_actions (np.ndarray): Boolean array indicating available actions. Assumed all actions are available if None.
-            epsilon (float): Current exploration rate.
+            epsilon (float): Current exploration rate, passed from Runner/RolloutWorker.
             evaluate (bool): Flag to set deterministic action selection (no exploration).
         Returns:
             int: The chosen action.
         """
-        inputs = obs.copy()
-        # The VDN policy's Q network (e.g., self.policy.eval_mlp) expects a specific input format.
-        # Typically, it's the observation, and for RNN based policies, a hidden state.
-        # last_action and agent_id might be appended to obs if the network is designed for it.
-        # The design doc for policy.vdn_UAV.py:
-        # "self.eval_mlp(inputs)" where inputs are from "agent/agent_UAV.py" which are "based on its local observation"
-        # Let's assume the policy's network takes the raw observation.
-        # If agent_id or last_action is needed, it should be part of the observation vector from the environment,
-        # or the policy's network input processing should handle it.
+        inputs = obs.copy() # Ensure obs is not modified
 
-        # For VDN, individual Q-values are computed.
-        # The policy object should have a method to get Q-values for an agent.
-        # Let's assume self.policy.get_q_values(inputs, agent_num) or similar.
-        # The current VDN design in DETAILED_DESIGN.md has `self.eval_mlp` for each agent.
-        # So, the policy's `choose_action` or a similar utility method should internally call the correct eval_mlp.
-
-        # The VDN `learn` method uses `self.eval_mlp` for each agent.
-        # For `choose_action`, we need to get Q-values from `self.eval_mlp[agent_num]` (if it's a list of networks)
-        # or `self.eval_mlp(obs, agent_id_one_hot)` if it's a single network taking agent_id.
-        # The design for VDN policy: "each agent's evaluation Q network (self.eval_mlp...)"
-        # Let's assume self.policy has a method that abstracts this for action selection.
-
-        if not evaluate and np.random.uniform() < epsilon: # Epsilon-greedy exploration
+        if not evaluate and np.random.uniform() < epsilon:
             if avail_actions is not None:
                 avail_actions_ind = np.nonzero(avail_actions)[0]
-                if len(avail_actions_ind) == 0:
-                    # This case should ideally not happen if there's always a valid action.
-                    # If it does, we might default to a random action from all possible or action 0.
-                    # For now, assume it doesn't or that the environment handles no-op correctly.
-                    # Fallback to random choice from all actions if avail_actions is all False.
-                    action = np.random.choice(self.n_actions)
+                if len(avail_actions_ind) == 0: # Should not happen if env guarantees one available action
+                    action = np.random.choice(self.n_actions) # Fallback
                 else:
                     action = np.random.choice(avail_actions_ind)
-            else: # No availability info, choose from all
+            else:
                 action = np.random.choice(self.n_actions)
-        else: # Greedy action
-            # The policy should provide Q-values for the agent's observation
-            # The VDN's `eval_mlp` (e.g., a D3QN from base_net.py) takes `inputs`
-            # These inputs are typically `obs` and potentially `agent_id` if the network architecture requires it.
-            # Let's assume the policy's `get_q_values_agent` method handles this.
+        else:
+            # Greedy action
+            # Policy's method is responsible for converting obs to tensor and moving to device
+            q_values_tensor = self.policy.get_agent_q_values(inputs, agent_num) 
             
-            # Convert obs to tensor
-            obs_tensor = torch.tensor(inputs, dtype=torch.float32).unsqueeze(0) # Add batch dimension
-            if self.args.use_cuda:
-                obs_tensor = obs_tensor.cuda()
-
-            # Get Q values from the policy's network for this agent
-            # This implies that self.policy.eval_mlp is either a list of networks,
-            # or a single network that can differentiate agents if needed (e.g. by agent_id in input)
-            # The design suggests "self.eval_mlp" is *an* instance of D3QN/MLP.
-            # This typically means each agent has its own instance.
-            # So, self.policy.eval_mlp[agent_num] would be the way.
-            # Let's assume the VDN class's structure manages this and exposes a suitable method.
-            
-            # A common pattern for VDN/IQL: policy has eval_q_network (or similar name)
-            # which is one network shared by all agents (if parameter sharing) or a list of networks.
-            # If shared, it might take agent_id as part of input. If separate, use agent_num as index.
-            # The provided design: `self.eval_mlp` (in VDN class) is an instance of D3QN/MLP.
-            # This usually means it's the *prototype* or class, and instances are created for each agent.
-            # `policy.vdn_UAV.py`: "Initialize: each agent's evaluation Q network (self.eval_mlp...)"
-            # This strongly implies `self.policy.eval_mlps[agent_num]` or similar.
-            # Or the policy's action selection method handles which agent's network to use.
-
-            # Let's assume the VDN class has a method `get_agent_q_values(obs, agent_num)`
-            q_values = self.policy.get_agent_q_values(obs_tensor, agent_num) # Expected to return a tensor
-            q_values = q_values.squeeze(0).cpu().detach().numpy() # Remove batch, move to cpu, convert to numpy
+            # Process Q-values (e.g., convert to numpy, handle unavailable actions)
+            q_values_np = q_values_tensor.squeeze(0).cpu().detach().numpy()
 
             if avail_actions is not None:
-                # Mask unavailable actions by setting their Q-values to a very low number
-                q_values[avail_actions == 0] = -float('inf')
+                q_values_np[avail_actions == 0] = -float('inf')  # Mask unavailable actions
             
-            action = np.argmax(q_values)
-
-        # Epsilon annealing (if not in evaluation mode)
-        if not evaluate:
-            self.epsilon = max(self.min_epsilon, self.epsilon - self.anneal_epsilon)
-            # print(f"Agent {agent_num} new epsilon: {self.epsilon}") # For debugging
+            action = np.argmax(q_values_np)
+        
+        # The epsilon annealing is handled by the Runner, not here.
+        # self.epsilon = max(self.min_epsilon, self.epsilon - self.anneal_epsilon) # DO NOT UNCOMMENT
 
         return action
 
@@ -148,8 +97,8 @@ class Agents:
 
     def save_model(self, path, train_step):
         """Saves the policy model."""
-        self.policy.save_model(path, train_step)
-        print(f"Saved model at train step {train_step} to {path}")
+        self.policy.save_model(path)
+        print(f"Agent's policy model saved (identifier: {train_step}) to directory: {path}")
 
     def load_model(self, path):
         """Loads the policy model."""

@@ -1,0 +1,18 @@
+[project]
+name = "UAV_MCP2"
+version = "0.1.0"
+description = "Multi-UAV Mission Control Platform"
+requires-python = "==3.11"
+dependencies = [
+    "imageio==2.37.0",
+    "matplotlib==3.10.0",
+    "numpy==1.26.4",
+    "torch==2.3.1+cu121",
+    "torchaudio==2.3.1+cu121",
+    "torchvision==0.18.1+cu121",
+    "tqdm==4.67.1"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build" 

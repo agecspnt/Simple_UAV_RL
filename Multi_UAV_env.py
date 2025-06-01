@@ -1,5 +1,6 @@
 import numpy as np
 import math
+import random # Added import
 
 class Multi_UAV_env_multi_level_practical_multicheck:
     def __init__(self, args):
@@ -37,7 +38,9 @@ class Multi_UAV_env_multi_level_practical_multicheck:
         self.n_speed = 2  # Number of speed levels
         self.vel_actions = np.array([0, 50], dtype=float)  # m/s, Corresponding speed values
 
-        self.BS_locations = np.array([[500, 600]], dtype=float)  # (x,y) coordinates
+        self.BS_locations = np.zeros((self.n_bs, 2), dtype=float) # Initialize placeholder
+        self.bs_radius = 200 # Radius for random BS placement
+
         self.init_location = np.array([[-250.0, 400.0], [-30.33, 930.33], [-30.33, -130.33]], dtype=float)
         self.dest_location = np.array([[1250.0, 400.0], [1030.33, -130.33], [1030.33, 930.33]], dtype=float)
 
@@ -83,15 +86,6 @@ class Multi_UAV_env_multi_level_practical_multicheck:
         # For get_env_info()
         self.args = args
 
-
-    def reset(self):
-        """Resets the environment to the initial state."""
-        self.episode_step = 0
-        self.current_location = np.copy(self.init_location)
-        self.is_arrived = np.zeros(self.n_a_agents, dtype=bool)
-        self.is_collision = np.zeros(self.n_a_agents, dtype=bool)
-        self.recorded_arrive = []
-        return self.get_obs(), self.get_state()
 
     def get_state_size(self):
         """Returns the size of the global state."""
@@ -672,6 +666,16 @@ class Multi_UAV_env_multi_level_practical_multicheck:
         self.is_collision = np.zeros(self.n_a_agents, dtype=bool)
         # self.recorded_arrive = [] # Cleared by _clear_episode_flags
 
+        # Randomize BS locations within a circle of bs_radius
+        for i in range(self.n_bs):
+            # Generate random angle
+            angle = random.uniform(0, 2 * math.pi)
+            # Generate random radius (sqrt for uniform distribution within circle)
+            r = self.bs_radius * math.sqrt(random.uniform(0, 1))
+            # Convert polar to cartesian coordinates
+            x = r * math.cos(angle)
+            y = r * math.sin(angle)
+            self.BS_locations[i] = [x, y]
         # Return obs and state as per common MARL practices
         return self.get_obs(), self.get_state()
 

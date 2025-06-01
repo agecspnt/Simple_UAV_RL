@@ -14,7 +14,8 @@ def get_common_args():
     parser.add_argument('--lr', type=float, default=5e-4, help='learning rate')
     parser.add_argument('--grad_norm_clip', type=float, default=10, help='gradient norm clipping')
     parser.add_argument('--save_cycle', type=int, default=5000, help='how often to save the model')
-    parser.add_argument('--cuda', type=bool, default=False, help='whether to use CUDA')
+    parser.add_argument('--target_update_cycle', type=int, default=200, help='how often to update the target network')
+    parser.add_argument('--cuda', action='store_true', help='enable CUDA (if available and desired)', default=True)
     parser.add_argument('--seed', type=int, default=123, help='random seed')
     parser.add_argument('--log_dir', type=str, default='./log/', help='directory to save logs')
     parser.add_argument('--model_dir', type=str, default='./model/', help='directory to save models')
@@ -24,14 +25,26 @@ def get_common_args():
     parser.add_argument('--min_epsilon', type=float, default=0.05, help='minimum epsilon for exploration')
     parser.add_argument('--anneal_steps', type=int, default=50000, help='steps for annealing epsilon') # Calculate anneal_epsilon based on this
     parser.add_argument('--buffer_size', type=int, default=5000, help='the size of replay buffer')
-    parser.add_argument('--batch_size', type=int, default=32, help='batch size for training')
+    parser.add_argument('--batch_size', type=int, default=64, help='batch size for training')
     
+    # Argument for evaluation mode
+    parser.add_argument('--evaluate', action='store_true', default=False, help='whether to run evaluation mode instead of training')
+
     # Specific to the environment or network structure
     parser.add_argument('--rnn_hidden_dim', type=int, default=64, help='GRU hidden layer size for agent Q network')
     parser.add_argument('--qmix_hidden_dim', type=int, default=64, help='Hidden layer size for QMix network (if used)') # Example if QMix was an option
     parser.add_argument('--two_hyper_layers', type=bool, default=False, help='Whether to use two hyper layers for QMix an option') # Example if QMix was an option
     parser.add_argument('--hyper_hidden_dim', type=int, default=64, help='Hidden layer size for QMix hyper network (if used)') # Example if QMix was an option
 
+    # Argument for map name, used in model saving paths
+    parser.add_argument('--map', type=str, default='default_map', help='Name of the map or scenario, used for organizing saved models')
+
+    # tqdm progress bar update interval
+    parser.add_argument('--tqdm_mininterval', type=float, default=0.5, help='Minimum interval (seconds) for tqdm progress bar updates.')
+
+    # Visualization arguments
+    parser.add_argument('--visualize_latest_eval', action='store_true', default=True, help='Whether to visualize the latest evaluation episode trajectories.')
+    parser.add_argument('--save_visualization_plot', action='store_true', default=True, help='Whether to save the visualization plot instead of displaying it.')
 
     args = parser.parse_args()
     args.anneal_epsilon = (args.epsilon - args.min_epsilon) / args.anneal_steps if args.anneal_steps > 0 else 0

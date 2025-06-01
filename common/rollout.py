@@ -18,15 +18,24 @@ class RolloutWorker:
         self.anneal_epsilon = args.anneal_epsilon if hasattr(args, 'anneal_epsilon') else 0.0 # Handle if not set
         self.min_epsilon = args.min_epsilon
 
-        print(f"Initialized RolloutWorker with Epsilon: {self.epsilon}, Min Epsilon: {self.min_epsilon}, Anneal Rate: {self.anneal_epsilon / self.args.anneal_steps if hasattr(self.args, 'anneal_steps') and self.args.anneal_steps > 0 else 'N/A'}")
+        # print(f"Initialized RolloutWorker with Epsilon: {self.epsilon}, Min Epsilon: {self.min_epsilon}, Anneal Rate: {self.anneal_epsilon / self.args.anneal_steps if hasattr(self.args, 'anneal_steps') and self.args.anneal_steps > 0 else 'N/A'}")
+        # The above print statement was modified to avoid potential error if anneal_steps is 0 or not present for anneal_epsilon
+        anneal_rate_info = 'N/A'
+        if hasattr(self.args, 'anneal_steps') and self.args.anneal_steps > 0 and self.anneal_epsilon > 0:
+            anneal_rate_info = self.anneal_epsilon / self.args.anneal_steps
+        print(f"Initialized RolloutWorker. Default Epsilon (if not passed to generate_episode): {self.epsilon}, Min Epsilon: {self.min_epsilon}, Anneal Rate (config): {anneal_rate_info}")
 
 
-    def generate_episode(self, episode_num=None, evaluate=False):
+    def generate_episode(self, episode_num=None, evaluate=False, epsilon=None, log_output_dir=None):
         """
         Generates a single episode of interaction.
         Args:
-            episode_num (int, optional): The current episode number, for logging or epsilon annealing.
+            episode_num (int, optional): The current episode number, for logging or other uses.
             evaluate (bool): Whether this episode is for evaluation (affects exploration).
+            epsilon (float, optional): The exploration rate to use. If None, defaults to 0 if evaluate is True, 
+                                     else uses self.epsilon (worker's internal state, which is not recommended if Runner manages it).
+                                     It is best if Runner always provides this.
+            log_output_dir (str, optional): The specific directory to save logs for this episode if evaluation logging is active.
         Returns:
             dict: A dictionary containing the episode's transitions and statistics.
                   Keys: 'o', 's', 'u', 'r', 'o_next', 's_next', 'avail_u', 
@@ -39,6 +48,7 @@ class RolloutWorker:
         # Episode buffer to store transitions
         o, u, r, s, avail_u, u_onehot, terminated, padded = [], [], [], [], [], [], [], []
         o_next, s_next, avail_u_next = [], [], []
+        episode_env_info = [] # <-- Add this line to store env_info per step
 
         # Reset environment and get initial state/obs
         # The environment's reset() method should return initial obs and state
@@ -52,7 +62,12 @@ class RolloutWorker:
         step = 0
 
         # Epsilon for this episode
-        current_epsilon = 0 if evaluate else self.epsilon
+        # current_epsilon = 0 if evaluate else self.epsilon # Old way
+        if epsilon is None: # Fallback if epsilon is not provided by caller
+            current_epsilon = 0.0 if evaluate else self.epsilon
+            # print(f"Warning: generate_episode using internal epsilon: {current_epsilon}") # For debugging
+        else:
+            current_epsilon = epsilon
 
         last_action = np.zeros((self.args.n_agents, self.args.n_actions)) # For recurrent policies if needed
 
@@ -86,6 +101,7 @@ class RolloutWorker:
             # Environment step
             # Env expects a list/array of integer actions
             reward, terminated_flag, env_info = self.env.step(actions) 
+            episode_env_info.append(env_info) # <-- Add this line to store env_info
             
             # Get next obs and state
             obs_all_agents_next = self.env.get_obs()
@@ -148,7 +164,8 @@ class RolloutWorker:
             'avail_u_next': np.array(avail_u_next),
             'u_onehot': np.array(u_onehot),
             'padded': np.array(padded),
-            'terminated': np.array(terminated)
+            'terminated': np.array(terminated),
+            'env_info': episode_env_info # <-- Add this line
         }
         
         # Add episode stats
@@ -161,42 +178,80 @@ class RolloutWorker:
             stats["is_success"] = env_info['is_success']
         
         # Anneal epsilon (if not evaluating)
-        if not evaluate:
-            self.epsilon = max(self.min_epsilon, self.epsilon - self.anneal_epsilon)
-            # The Agents class also anneals epsilon. This can lead to double annealing.
-            # Standard practice: Runner or RolloutWorker controls exploration schedule and passes epsilon to Agents.
-            # Or, Agents class manages its own epsilon internally.
-            # For now, let's assume RolloutWorker manages its own copy for generation,
-            # and Agents might use a centrally managed epsilon (e.g. from args, updated by Runner).
-            # The provided agent_UAV.py has its own epsilon annealing.
-            # Let's comment out annealing here to avoid conflict if Agents class handles it.
-            # self.agents.set_epsilon(self.epsilon) # If agents class needs to be updated with this worker's epsilon
+        # This was commented out before, and should remain so, as Runner handles annealing.
+        # if not evaluate:
+        #     self.epsilon = max(self.min_epsilon, self.epsilon - self.anneal_epsilon)
 
-        if evaluate and self.args.log_dir is not None:
-            self.write_log(episode_transitions, stats, episode_num)
+        log_file_path = None # Initialize log_file_path
+        if evaluate and log_output_dir is not None: # Check for the specific log_output_dir for logging
+            log_file_path = self.write_log(episode_transitions, stats, episode_num, log_output_dir)
+        elif evaluate and self.args.log_dir is not None:
+            # Fallback or warning if log_output_dir is not provided but old self.args.log_dir is
+            # This case should ideally not be hit if Runner is updated correctly.
+            print(f"Warning: Evaluation logging triggered but specific log_output_dir not provided. Falling back to self.args.log_dir: {self.args.log_dir}")
+            log_file_path = self.write_log(episode_transitions, stats, episode_num, self.args.log_dir) # Use specific dir
 
-        return episode_transitions, stats
+        return episode_transitions, stats, log_file_path # <-- Modified to return log_file_path
 
-    def write_log(self, episode_data, episode_stats, episode_num):
+    def write_log(self, episode_data, episode_stats, episode_num, target_log_dir):
         """
-        Writes detailed interaction logs for an evaluation episode.
+        Writes detailed interaction logs for an evaluation episode to a specified directory.
         Log format: text file, one line per step.
+        Args:
+            target_log_dir (str): The directory where the log file should be saved.
         """
-        if not os.path.exists(self.args.log_dir):
-            os.makedirs(self.args.log_dir)
+        # Check if episode_num indicates it's not the first evaluation episode (e.g., not ending with _ep0)
+        # episode_num is a string like "eval_T12345_ep15"
+        if episode_num is not None and isinstance(episode_num, str) and "_ep" in episode_num:
+            try:
+                ep_val = int(episode_num.split("_ep")[-1])
+                if ep_val != 0:
+                    return None # Do not log if not the first evaluation episode
+            except ValueError:
+                # If parsing fails, proceed with original behavior (or add specific error handling)
+                pass # Or print a warning, or log anyway depending on desired strictness
+
+        if not target_log_dir: # If no target directory is provided, don't log.
+            print("Warning: write_log called without a target_log_dir. Skipping log.")
+            return None
+
+        if not os.path.exists(target_log_dir):
+            try:
+                os.makedirs(target_log_dir)
+            except OSError as e:
+                print(f"Error creating log directory {target_log_dir}: {e}")
+                return None
         
         # Create a unique log file name, e.g., alg_time_eval_epN.log
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        # Timestamp is now part of the parent folder name, so log file name can be simpler if desired
+        # but keeping original structure with timestamp for now, as it might still be useful for individual file sorting
+        timestamp = time.strftime("%Y%m%d-%H%M%S") 
         log_file_name = f"{self.args.alg}_{timestamp}_eval_ep{episode_num if episode_num is not None else 'undef'}.log"
-        log_path = os.path.join(self.args.log_dir, log_file_name)
+        log_path = os.path.join(target_log_dir, log_file_name)
 
         with open(log_path, "w") as f:
             f.write(f"Episode: {episode_num if episode_num is not None else 'N/A'}, Algorithm: {self.args.alg}\n")
             f.write(f"Total Reward: {episode_stats['episode_reward']:.2f}, Length: {episode_stats['episode_length']}\n")
             if "is_success" in episode_stats:
                 f.write(f"Success: {episode_stats['is_success']}\n")
+
+            # Add BS locations to the log if available in the environment
+            if hasattr(self.env, 'BS_locations'):
+                bs_locs = self.env.BS_locations
+                # Format for consistency with visualizer parsing: [[x1, y1], [x2, y2]]
+                if isinstance(bs_locs, np.ndarray):
+                    bs_locs_list = bs_locs.tolist()
+                else:
+                    bs_locs_list = list(bs_locs) # Ensure it's a list of lists
+                
+                # Ensure formatting of numbers to float with one decimal place for consistency if desired, or just str()
+                bs_locs_str = "[" + ", ".join([f"[{loc[0]:.1f}, {loc[1]:.1f}]" for loc in bs_locs_list]) + "]"
+                f.write(f"BS Locations: {bs_locs_str}\n")
+            else:
+                f.write(f"BS Locations: Not available in env object or attribute name mismatch\n")
+
             f.write("-" * 30 + "\n")
-            f.write("Step | Agent Actions | Reward | Terminated | UAV Locations (if available) | Collisions (if available)\n")
+            f.write("Step | Agent Actions | Reward | Terminated | UAV Locations (if available) | Collisions (from env_info)\n")
             f.write("-" * 30 + "\n")
 
             # Iterate through the actual steps taken in the episode
@@ -204,6 +259,7 @@ class RolloutWorker:
                 actions_step = episode_data['u'][step_idx].flatten() # (n_agents,)
                 reward_step = episode_data['r'][step_idx][0]
                 terminated_step = episode_data['terminated'][step_idx][0]
+                env_info_step = episode_data['env_info'][step_idx] if 'env_info' in episode_data and step_idx < len(episode_data['env_info']) else {} # <-- Get env_info for the step
                 
                 log_line = f"{step_idx:4d} | {actions_step} | {reward_step:7.2f} | {terminated_step:3.0f} | "
                 
@@ -239,19 +295,23 @@ class RolloutWorker:
                 locations_str = "[" + ", ".join([f"({loc[0]:.1f},{loc[1]:.1f})" for loc in uav_locs_real]) + "]"
                 log_line += f"{locations_str} | "
                 
-                # Collisions: env_info from step gives total collisions.
-                # We don't have per-step env_info here unless we store it.
-                # `self.env.is_collision` would be the status *after* the step.
-                # This is not part of episode_data.
-                # For a simple log, we can omit per-step collision details if not easily available.
-                # The `episode_stats` or final `env_info` might have a summary.
-                # Let's assume for now we log "N/A" for per-step collisions in this basic logger.
-                log_line += "N/A (Collision info not logged per step here)"
+                # Log collisions from env_info
+                collisions_str = "N/A"
+                if 'collisions' in env_info_step: # Assuming env_info contains a 'collisions' key (e.g., a list/array of booleans for each agent or a summary)
+                    # Adjust formatting based on how 'collisions' is structured in env_info
+                    # For example, if it's a list of booleans per agent:
+                    if isinstance(env_info_step['collisions'], (list, np.ndarray)) and len(env_info_step['collisions']) == self.n_agents:
+                        collisions_str = "[" + ", ".join(["C" if coll else "-" for coll in env_info_step['collisions']]) + "]"
+                    else: # Otherwise, just convert to string
+                        collisions_str = str(env_info_step['collisions'])
+                
+                log_line += f"{collisions_str}" # <-- Modified to log actual collision data
 
                 f.write(log_line + "\n")
             
             f.write("-" * 30 + "\n")
             print(f"Evaluation log written to {log_path}")
+        return log_path
 
 
 if __name__ == '__main__':
@@ -348,7 +408,7 @@ if __name__ == '__main__':
     worker = RolloutWorker(mock_env, mock_agents, test_args)
 
     print("\n--- Generating Training Episode ---")
-    episode_data_train, stats_train = worker.generate_episode(episode_num=1, evaluate=False)
+    episode_data_train, stats_train, _ = worker.generate_episode(episode_num=1, evaluate=False)
     print(f"Training Episode Stats: {stats_train}")
     assert stats_train['episode_length'] <= test_args.episode_limit
     assert 'o' in episode_data_train
@@ -364,7 +424,7 @@ if __name__ == '__main__':
         import shutil
         shutil.rmtree(test_args.log_dir) # Clean up previous test logs
 
-    episode_data_eval, stats_eval = worker.generate_episode(episode_num=1, evaluate=True)
+    episode_data_eval, stats_eval, log_file_path = worker.generate_episode(episode_num=1, evaluate=True)
     print(f"Evaluation Episode Stats: {stats_eval}")
     assert stats_eval['epsilon'] == 0 # Epsilon should be 0 for evaluation
     assert os.path.exists(test_args.log_dir), "Log directory was not created."
