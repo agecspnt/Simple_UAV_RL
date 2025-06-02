@@ -5,10 +5,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "torch",
-  "torchvision",
-  "torchaudio",
+    "torch==2.3.1",
+    "torchvision==0.18.1",
+    "torchaudio==2.3.1",
+    "tqdm==4.67.1",
+    "matplotlib==3.10.0",
+    "imageio==2.37.0",
+    "numpy==1.26.4"
 ]
 
-[tool.uv.sources]
-pytorch-cuda = { url = "https://download.pytorch.org/whl/cu121" }
+[tool.uv.pip]
+extra-index-url = ["https://download.pytorch.org/whl/cu121"]
