@@ -132,6 +132,7 @@ cython_debug/
 # Logs and Models (User specific)
 log/
 model/
+lora_finetuned_model/
 
 # IDE - JetBrains
 .idea/ 
